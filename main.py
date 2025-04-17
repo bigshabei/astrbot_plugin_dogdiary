@@ -263,7 +263,7 @@ class LickDogDiaryPlugin(Star):
                     continue
                 
                 # 尝试获取 bot 的 QQ 号作为 uin
-                bot_uin = "743498954"  # 默认值
+                bot_uin = "123456789"  # 默认值
                 try:
                     bot_info = await client.get_login_info()
                     if bot_info and 'user_id' in bot_info:
@@ -405,8 +405,8 @@ class LickDogDiaryPlugin(Star):
                     time_str = f"{current_time} {weather}周{weekday_cn}"
                     emotion_score = await self._analyze_emotion_intensity(diary_content)
                     if emotion_score > 0:
-                        logger.info(f"日记情感强度评分: {emotion_score}")
-                    result_msg = f"【舔狗日记 - {time_str}】\n{diary_content}"
+                        logger.info(f"临时日记情感强度评分: {emotion_score}")
+                    result_msg = f"【临时舔狗日记 - {time_str}】\n{diary_content}"
                     if emotion_score > 0:
                         result_msg += f"\n(情感强度: {emotion_score}/10)"
                     yield event.plain_result(result_msg)
@@ -471,6 +471,63 @@ class LickDogDiaryPlugin(Star):
             f"在 {self.auto_send_time} 自动发送到指定群组。"
         )
         yield event.plain_result(help_text)
+
+    @filter.command("重写舔狗日记")
+    async def rewrite_diary(self, event: AstrMessageEvent):
+        today = date.today().isoformat()
+        diaries = self._load_diaries()
+        
+        #yield event.plain_result("正在重写今天的舔狗日记...")
+        current_time = datetime.now().strftime("%Y-%m-%d")
+        weekday = datetime.now().strftime("%w")
+        weather = random.choice(['☀️', '🌥', '🌧', '🌪'])
+        weekdays = ['日', '一', '二', '三', '四', '五', '六']
+        weekday_cn = weekdays[int(weekday)]
+        date_info = f"{current_time} {weather}周{weekday_cn}"
+        
+        previous_diary_summary = await self.summarize_and_forget_diaries(diaries)
+        prompt = self.default_prompt.format(
+            style=self.diary_style,
+            min_word_count=self.min_word_count,
+            max_word_count=self.max_word_count,
+            date=date_info,
+            history=previous_diary_summary if previous_diary_summary else '暂无历史记录'
+        )
+        
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                llm_response = await self.context.get_using_provider().text_chat(
+                    prompt=prompt,
+                    contexts=[],
+                    func_tool=None
+                )
+                if llm_response.role == "assistant":
+                    diary_content = llm_response.completion_text.strip()
+                    time_str = f"{current_time} {weather}周{weekday_cn}"
+                    emotion_score = await self._analyze_emotion_intensity(diary_content)
+                    is_important = emotion_score >= self.emotion_threshold
+                    if emotion_score > 0:
+                        logger.info(f"重写日记情感强度评分: {emotion_score}, 标记为重要: {is_important}")
+                    else:
+                        logger.warning("情感强度分析失败，默认不标记为重要")
+                        is_important = False
+                    diaries[today] = {'time': time_str, 'content': diary_content, 'important': is_important, 'emotion_score': emotion_score}
+                    self._save_diaries(diaries)
+                    self._backup_original_diary(today, time_str, diary_content)
+                    result_msg = f"【重写舔狗日记 - {diaries[today]['time']}】\n{diary_content}"
+                    if emotion_score > 0:
+                        result_msg += f"\n(情感强度: {emotion_score}/10)"
+                    yield event.plain_result(result_msg)
+                    return
+                else:
+                    yield event.plain_result("重写日记失败，请稍后重试。")
+                    return
+            except Exception as e:
+                logger.error(f"调用 LLM 重写日记时出错 (尝试 {attempt+1}/{max_attempts}): {e}")
+                if attempt == max_attempts - 1:
+                    yield event.plain_result("重写日记时发生错误，请稍后重试。")
+                continue
 
     # @filter.command("测试发送舔狗日记")
     # async def test_send_diary(self, event: AstrMessageEvent):
