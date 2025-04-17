@@ -1,5 +1,6 @@
 import random
 import json
+import re
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, Any, List
@@ -20,7 +21,7 @@ SUMMARY_CACHE_FILE = Path("data/plugins_data/astrbot_plugin_dogdiary") / "summar
 ORIGINAL_BACKUP_DIR = Path("data/plugins_data/astrbot_plugin_dogdiary/originals")
 
 # 转发阈值，超过此字数以转发样式发送
-FORWARD_THRESHOLD = 234
+FORWARD_THRESHOLD = 500
 
 @register("astrbot_plugin_dogdiary", "大沙北", "每日一记的舔狗日记", "1.3.6", "https://github.com/bigshabei/astrbot_plugin_dogdiary")
 class LickDogDiaryPlugin(Star):
@@ -262,7 +263,7 @@ class LickDogDiaryPlugin(Star):
                     continue
                 
                 # 尝试获取 bot 的 QQ 号作为 uin
-                bot_uin = "123456789"  # 默认值
+                bot_uin = "743498954"  # 默认值
                 try:
                     bot_info = await client.get_login_info()
                     if bot_info and 'user_id' in bot_info:
@@ -426,6 +427,26 @@ class LickDogDiaryPlugin(Star):
             yield event.plain_result("暂无日记记录。")
             return
         
+        message_str = event.message_str.strip()
+        date_pattern = r'(\d{1,2})\.(\d{1,2})'
+        match = re.search(date_pattern, message_str)
+        
+        if match:
+            month = int(match.group(1))
+            day = int(match.group(2))
+            current_year = datetime.now().year
+            target_date = f"{current_year:04d}-{month:02d}-{day:02d}"
+            
+            if target_date in diaries:
+                diary = diaries[target_date]
+                result_msg = f"【舔狗日记 - {diary['time']}】\n{diary['content']}"
+                if 'emotion_score' in diary and diary['emotion_score'] > 0:
+                    result_msg += f"\n(情感强度: {diary['emotion_score']}/10)"
+                yield event.plain_result(result_msg)
+            else:
+                yield event.plain_result(f"未找到日期为 {target_date} 的日记记录。")
+            return
+        
         diary_list = []
         sorted_diaries = sorted(diaries.items(), key=lambda x: date.fromisoformat(x[0]), reverse=True)
         for diary_date, diary in sorted_diaries:
@@ -435,63 +456,6 @@ class LickDogDiaryPlugin(Star):
         
         yield event.plain_result(f"【舔狗日记列表】\n" + "\n".join(diary_list))
 
-    @filter.command("重写舔狗日记")
-    async def rewrite_diary(self, event: AstrMessageEvent):
-        today = date.today().isoformat()
-        diaries = self._load_diaries()
-        
-        yield event.plain_result("正在重写今天的舔狗日记...")
-        current_time = datetime.now().strftime("%Y-%m-%d")
-        weekday = datetime.now().strftime("%w")
-        weather = random.choice(['☀️', '🌥', '🌧', '🌪'])
-        weekdays = ['日', '一', '二', '三', '四', '五', '六']
-        weekday_cn = weekdays[int(weekday)]
-        date_info = f"{current_time} {weather}周{weekday_cn}"
-        
-        previous_diary_summary = await self.summarize_and_forget_diaries(diaries)
-        prompt = self.default_prompt.format(
-            style=self.diary_style,
-            min_word_count=self.min_word_count,
-            max_word_count=self.max_word_count,
-            date=date_info,
-            history=previous_diary_summary if previous_diary_summary else '暂无历史记录'
-        )
-        
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                llm_response = await self.context.get_using_provider().text_chat(
-                    prompt=prompt,
-                    contexts=[],
-                    func_tool=None
-                )
-                if llm_response.role == "assistant":
-                    diary_content = llm_response.completion_text.strip()
-                    time_str = f"{current_time} {weather}周{weekday_cn}"
-                    emotion_score = await self._analyze_emotion_intensity(diary_content)
-                    is_important = emotion_score >= self.emotion_threshold
-                    if emotion_score > 0:
-                        logger.info(f"重写日记情感强度评分: {emotion_score}, 标记为重要: {is_important}")
-                    else:
-                        logger.warning("情感强度分析失败，默认不标记为重要")
-                        is_important = False
-                    diaries[today] = {'time': time_str, 'content': diary_content, 'important': is_important, 'emotion_score': emotion_score}
-                    self._save_diaries(diaries)
-                    self._backup_original_diary(today, time_str, diary_content)
-                    result_msg = f"【重写舔狗日记 - {diaries[today]['time']}】\n{diary_content}"
-                    if emotion_score > 0:
-                        result_msg += f"\n(情感强度: {emotion_score}/10)"
-                    yield event.plain_result(result_msg)
-                    return
-                else:
-                    yield event.plain_result("重写日记失败，请稍后重试。")
-                    return
-            except Exception as e:
-                logger.error(f"调用 LLM 重写日记时出错 (尝试 {attempt+1}/{max_attempts}): {e}")
-                if attempt == max_attempts - 1:
-                    yield event.plain_result("重写日记时发生错误，请稍后重试。")
-                continue
-
     @filter.command("舔狗帮助")
     async def help_command(self, event: AstrMessageEvent):
         help_text = (
@@ -500,13 +464,95 @@ class LickDogDiaryPlugin(Star):
             "可用指令列表：\n"
             "- 今日舔狗日记：查看或生成当天的舔狗日记。\n"
             "- 舔狗日记：基于历史记忆临时生成一份舔狗日记，不保存。\n"
-            "- 舔狗日记列表：列出所有日记的日期和天气信息。\n"
+            "- 舔狗日记列表：列出所有日记的日期和天气信息，可附加日期（如 '舔狗日记列表 4.17'）查看特定日期日记。\n"
             "- 重写舔狗日记：重写当天的舔狗日记，覆盖原有内容。\n"
             "- 舔狗帮助：显示本帮助信息。\n\n"
             f"日记将每天在 {self.auto_generate_time} 自动生成，"
             f"在 {self.auto_send_time} 自动发送到指定群组。"
         )
         yield event.plain_result(help_text)
+
+    # @filter.command("测试发送舔狗日记")
+    # async def test_send_diary(self, event: AstrMessageEvent):
+    #     group_id = event.get_group_id()
+    #     if not group_id:
+    #         yield event.plain_result("此命令只能在群聊中使用，用于测试日记发送功能。")
+    #         return
+        
+    #     today = date.today().isoformat()
+    #     diaries = self._load_diaries()
+    #     if today not in diaries:
+    #         yield event.plain_result("今天尚未生成日记，无法测试发送。")
+    #         return
+        
+    #     diary_content = diaries[today]['content']
+    #     time_str = diaries[today]['time']
+    #     emotion_score = diaries[today].get('emotion_score', 0)
+    #     result_msg = f"【测试舔狗日记 - {time_str}】\n{diary_content}"
+    #     if emotion_score > 0:
+    #         result_msg += f"\n(情感强度: {emotion_score}/10)"
+        
+    #     # 检查是否需要以转发样式发送
+    #     use_forward_style = len(result_msg) > FORWARD_THRESHOLD
+    #     success_count = 0
+    #     total_count = len(self.auto_send_groups) if self.auto_send_groups else 0
+        
+    #     # 首先给当前群聊发送反馈
+    #     try:
+    #         if use_forward_style and hasattr(event, 'bot'):
+    #             forward_node = {
+    #                 "type": "node",
+    #                 "data": {
+    #                     "name": "舔狗日记",
+    #                     "uin": "123456789",
+    #                     "content": [
+    #                         {"type": "text", "data": {"text": result_msg}}
+    #                     ]
+    #                 }
+    #             }
+    #             await event.bot.send_group_msg(group_id=int(group_id), message=[forward_node])
+    #         else:
+    #             await event.bot.send_group_msg(group_id=int(group_id), message=result_msg)
+    #         logger.info(f"测试发送日记到当前群组 {group_id} 成功")
+    #     except Exception as e:
+    #         yield event.plain_result(f"测试发送到当前群组失败：{str(e)}")
+    #         logger.error(f"测试发送日记到当前群组 {group_id} 失败: {e}")
+    #         return
+        
+    #     yield event.plain_result("正在测试发送日记到所有配置的定时群组...")
+        
+    #     if not total_count:
+    #         yield event.plain_result("未配置任何定时发送群组，测试结束。")
+    #         return
+        
+    #     # 然后遍历所有配置的定时群组进行测试发送
+    #     for target_group_id in self.auto_send_groups:
+    #         try:
+    #             if use_forward_style and hasattr(event, 'bot'):
+    #                 forward_node = {
+    #                     "type": "node",
+    #                     "data": {
+    #                         "name": "舔狗日记",
+    #                         "uin": "123456789",
+    #                         "content": [
+    #                             {"type": "text", "data": {"text": result_msg}}
+    #                         ]
+    #                     }
+    #                 }
+    #                 await event.bot.send_group_msg(group_id=int(target_group_id), message=[forward_node])
+    #             else:
+    #                 await event.bot.send_group_msg(group_id=int(target_group_id), message=result_msg)
+    #             logger.info(f"测试发送日记到定时群组 {target_group_id} 成功")
+    #             success_count += 1
+    #             await asyncio.sleep(1)  # 防止发送过快被限制
+    #         except ActionFailed as e:
+    #             logger.error(f"测试发送日记到定时群组 {target_group_id} 失败 (ActionFailed): {e}")
+    #         except Exception as e:
+    #             logger.error(f"测试发送日记到定时群组 {target_group_id} 失败: {e}")
+        
+    #     yield event.plain_result(f"测试发送完成！成功发送到 {success_count}/{total_count} 个定时群组。")
+    #     if success_count < total_count:
+    #         yield event.plain_result("部分群组发送失败，请检查配置的群组ID是否正确或是否有权限。")
 
     async def summarize_and_forget_diaries(self, diaries: Dict[str, Any]) -> str:
         if not diaries:
