@@ -1,0 +1,26 @@
+{
+    "dogdiary_min_word_count": {
+        "description": "日记最小字数",
+        "type": "int",
+        "hint": "日记内容的最小字数限制",
+        "default": 150
+    },
+    "dogdiary_max_word_count": {
+        "description": "日记最大字数",
+        "type": "int",
+        "hint": "日记内容的最大字数限制",
+        "default": 300
+    },
+    "dogdiary_style": {
+        "description": "日记风格",
+        "type": "string",
+        "hint": "日记的风格描述，如 '幽默自嘲'、'深情悲伤' 等",
+        "default": "幽默自嘲"
+    },
+    "dogdiary_auto_generate_time": {
+        "description": "自动生成日记的时间",
+        "type": "string",
+        "hint": "每天自动生成日记的时间，格式为 HH:MM（24小时制），例如 08:00",
+        "default": "08:00"
+    }
+}

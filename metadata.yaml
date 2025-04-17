@@ -1,0 +1,5 @@
+name: astrbot_plugin_dogdiary
+version: "1.2.0"
+author: "大沙北"
+description: "每日一记的舔狗日记插件，自动生成幽默舔狗日记，模拟人类记忆遗忘机制。"
+repository: "https://github.com/bigshabei/astrbot_plugin_dogdiary"
