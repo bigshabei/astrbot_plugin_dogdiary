@@ -22,5 +22,17 @@
         "type": "string",
         "hint": "每天自动生成日记的时间，格式为 HH:MM（24小时制），例如 08:00",
         "default": "08:00"
+    },
+    "dogdiary_auto_send_time": {
+        "description": "自动发送日记的时间",
+        "type": "string",
+        "hint": "每天自动发送日记到指定群的时间，格式为 HH:MM（24小时制），例如 09:00",
+        "default": "09:00"
+    },
+    "dogdiary_auto_send_groups": {
+        "description": "自动发送日记的群组ID列表",
+        "type": "list",
+        "hint": "日记自动发送到的群组ID列表，多个ID用英文逗号分隔，例如 123456,789012。可以通过 '测试发送舔狗日记' 指令验证群组ID是否正确",
+        "default": []
     }
 }

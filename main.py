@@ -2,12 +2,15 @@ import random
 import json
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 import logging
 import asyncio
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.api.event import MessageChain
+import astrbot.api.message_components as Comp
+from aiocqhttp.exceptions import ActionFailed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +19,10 @@ DIARY_JSON_FILE = Path("data/plugins_data/astrbot_plugin_dogdiary") / "dog_diari
 SUMMARY_CACHE_FILE = Path("data/plugins_data/astrbot_plugin_dogdiary") / "summary_cache.json"
 ORIGINAL_BACKUP_DIR = Path("data/plugins_data/astrbot_plugin_dogdiary/originals")
 
-@register("astrbot_plugin_dogdiary", "大沙北", "每日一记的舔狗日记", "1.2.0", "https://github.com/bigshabei/astrbot_plugin_dogdiary")
+# 转发阈值，超过此字数以转发样式发送
+FORWARD_THRESHOLD = 234
+
+@register("astrbot_plugin_dogdiary", "大沙北", "每日一记的舔狗日记", "1.3.6", "https://github.com/bigshabei/astrbot_plugin_dogdiary")
 class LickDogDiaryPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -29,13 +35,17 @@ class LickDogDiaryPlugin(Star):
         self.max_word_count = config.get("dogdiary_max_word_count", 300) if config else 300
         self.diary_style = config.get("dogdiary_style", "幽默自嘲") if config else "幽默自嘲"
         self.auto_generate_time = config.get("dogdiary_auto_generate_time", "08:00") if config else "08:00"
+        self.auto_send_time = config.get("dogdiary_auto_send_time", "09:00") if config else "09:00"
+        self.auto_send_groups = [str(gid) for gid in config.get("dogdiary_auto_send_groups", [])] if config else []
         self.default_prompt = (f"请生成一篇{{style}}风格的舔狗日记，内容要反映出对心上人爱而不得的痛苦心情，"
                                f"字数在{{min_word_count}}到{{max_word_count}}字之间。日期为：{{date}}。"
                                f"请考虑之前的日记内容：{{history}}")
         self.summary_cache: Dict[str, str] = self._load_summary_cache()
         self.emotion_threshold = 7
         asyncio.create_task(self._daily_diary_task())
+        asyncio.create_task(self._daily_send_task())
         logger.info(f"启动舔狗日记自动生成定时任务，时间设置为 {self.auto_generate_time}")
+        logger.info(f"启动舔狗日记自动发送定时任务，时间设置为 {self.auto_send_time}，发送群组: {self.auto_send_groups}")
 
     def _ensure_data_directory(self):
         data_dir = DIARY_JSON_FILE.parent
@@ -200,60 +210,97 @@ class LickDogDiaryPlugin(Star):
                 logger.error(f"自动生成日记任务异常: {e}")
                 await asyncio.sleep(3600)
 
-    async def _generate_diary_for_today(self, diaries: Dict[str, Any], today: str):
-        try:
-            current_time = datetime.now().strftime("%Y-%m-%d")
-            weekday = datetime.now().strftime("%w")
-            weather = random.choice(['☀️', '🌥', '🌧', '🌪'])
-            weekdays = ['日', '一', '二', '三', '四', '五', '六']
-            weekday_cn = weekdays[int(weekday)]
-            date_info = f"{current_time} {weather}周{weekday_cn}"
-            
-            previous_diary_summary = await self.summarize_and_forget_diaries(diaries)
-            
-            prompt = self.default_prompt.format(
-                style=self.diary_style,
-                min_word_count=self.min_word_count,
-                max_word_count=self.max_word_count,
-                date=date_info,
-                history=previous_diary_summary if previous_diary_summary else '暂无历史记录'
-            )
-            
-            max_attempts = 3
-            diary_content = None
-            for attempt in range(max_attempts):
-                try:
-                    llm_response = await self.context.get_using_provider().text_chat(
-                        prompt=prompt,
-                        contexts=[],
-                        func_tool=None
-                    )
-                    if llm_response.role == "assistant":
-                        diary_content = llm_response.completion_text.strip()
-                        break
-                except Exception as e:
-                    logger.error(f"生成日记时出错 (尝试 {attempt+1}/{max_attempts}): {e}")
-                    if attempt == max_attempts - 1:
-                        logger.error("生成日记失败")
-                        return
-            
-            if diary_content:
-                time_str = f"{current_time} {weather}周{weekday_cn}"
-                emotion_score = await self._analyze_emotion_intensity(diary_content)
-                is_important = emotion_score >= self.emotion_threshold
+    async def _daily_send_task(self):
+        logger.info(f"启动舔狗日记自动发送定时任务，时间设置为 {self.auto_send_time}")
+        while True:
+            try:
+                now = datetime.now()
+                hour, minute = map(int, self.auto_send_time.split(':'))
+                next_trigger = datetime(now.year, now.month, now.day, hour, minute)
+                if now > next_trigger:
+                    next_trigger += timedelta(days=1)
+                wait_seconds = (next_trigger - now).total_seconds()
+                await asyncio.sleep(wait_seconds)
+                
+                if not self.auto_send_groups:
+                    logger.info("未设置自动发送的群组，跳过发送任务")
+                    continue
+                
+                today = date.today().isoformat()
+                diaries = self._load_diaries()
+                if today not in diaries:
+                    logger.info(f"今天 ({today}) 尚未生成日记，跳过自动发送")
+                    continue
+                
+                diary_content = diaries[today]['content']
+                time_str = diaries[today]['time']
+                emotion_score = diaries[today].get('emotion_score', 0)
+                result_msg = f"【今日舔狗日记 - {time_str}】\n{diary_content}"
                 if emotion_score > 0:
-                    logger.info(f"日记情感强度评分: {emotion_score}, 标记为重要: {is_important}")
-                else:
-                    logger.warning("情感强度分析失败，默认不标记为重要")
-                    is_important = False
-                diaries[today] = {'time': time_str, 'content': diary_content, 'important': is_important, 'emotion_score': emotion_score}
-                self._save_diaries(diaries)
-                self._backup_original_diary(today, time_str, diary_content)
-                logger.info(f"成功生成日记: {today}")
-            else:
-                logger.error("生成日记内容为空，跳过保存")
-        except Exception as e:
-            logger.error(f"生成当天日记时发生异常: {e}")
+                    result_msg += f"\n(情感强度: {emotion_score}/10)"
+                
+                # 检查是否需要以转发样式发送
+                use_forward_style = len(result_msg) > FORWARD_THRESHOLD
+                sent_count = 0
+                
+                # 获取所有平台实例，尝试找到支持发送消息的适配器
+                platforms = self.context.platform_manager.get_insts()
+                if not platforms:
+                    logger.error("定时发送失败：未找到任何平台适配器。")
+                    continue
+                
+                # 优先尝试获取 aiocqhttp 平台
+                client = None
+                for platform in platforms:
+                    if platform.__class__.__name__.lower().find("aiocqhttp") != -1:
+                        if hasattr(platform, 'client') and platform.client:
+                            client = platform.client
+                            logger.info("找到 AIOCQHTTP 平台适配器，用于定时发送。")
+                            break
+                if not client:
+                    logger.warning("未找到 AIOCQHTTP 平台适配器，定时发送可能失败。")
+                    continue
+                
+                # 尝试获取 bot 的 QQ 号作为 uin
+                bot_uin = "123456789"  # 默认值
+                try:
+                    bot_info = await client.get_login_info()
+                    if bot_info and 'user_id' in bot_info:
+                        bot_uin = str(bot_info['user_id'])
+                        logger.info(f"获取到 bot QQ 号: {bot_uin}")
+                except Exception as e:
+                    logger.warning(f"获取 bot QQ 号失败，使用默认值: {e}")
+                
+                for group_id in self.auto_send_groups:
+                    try:
+                        if use_forward_style:
+                            # 以转发样式发送
+                            forward_node = {
+                                "type": "node",
+                                "data": {
+                                    "name": "舔狗日记",
+                                    "uin": bot_uin,
+                                    "content": [
+                                        {"type": "text", "data": {"text": result_msg}}
+                                    ]
+                                }
+                            }
+                            await client.send_group_msg(group_id=int(group_id), message=[forward_node])
+                        else:
+                            await client.send_group_msg(group_id=int(group_id), message=result_msg)
+                        logger.info(f"成功发送日记到群组 {group_id}, 样式: {'转发' if use_forward_style else '文本'}")
+                        sent_count += 1
+                        await asyncio.sleep(1)  # 防止发送过快被限制
+                    except ActionFailed as e:
+                        logger.error(f"发送日记到群组 {group_id} 失败 (ActionFailed): {e}")
+                    except Exception as e:
+                        logger.error(f"发送日记到群组 {group_id} 失败: {e}")
+                
+                if sent_count == 0:
+                    logger.warning("没有成功发送日记到任何群组，请检查配置的群组ID是否正确。")
+            except Exception as e:
+                logger.error(f"自动发送日记任务异常: {e}")
+                await asyncio.sleep(3600)  # 发生异常时等待1小时后重试
 
     @filter.command("今日舔狗日记")
     async def generate_diary(self, event: AstrMessageEvent):
@@ -456,7 +503,8 @@ class LickDogDiaryPlugin(Star):
             "- 舔狗日记列表：列出所有日记的日期和天气信息。\n"
             "- 重写舔狗日记：重写当天的舔狗日记，覆盖原有内容。\n"
             "- 舔狗帮助：显示本帮助信息。\n\n"
-            f"日记将每天在 {self.auto_generate_time} 自动生成。"
+            f"日记将每天在 {self.auto_generate_time} 自动生成，"
+            f"在 {self.auto_send_time} 自动发送到指定群组。"
         )
         yield event.plain_result(help_text)
 
