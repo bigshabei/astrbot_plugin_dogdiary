@@ -405,8 +405,8 @@ class LickDogDiaryPlugin(Star):
                     time_str = f"{current_time} {weather}周{weekday_cn}"
                     emotion_score = await self._analyze_emotion_intensity(diary_content)
                     if emotion_score > 0:
-                        logger.info(f"临时日记情感强度评分: {emotion_score}")
-                    result_msg = f"【临时舔狗日记 - {time_str}】\n{diary_content}"
+                        logger.info(f"日记情感强度评分: {emotion_score}")
+                    result_msg = f"【舔狗日记 - {time_str}】\n{diary_content}"
                     if emotion_score > 0:
                         result_msg += f"\n(情感强度: {emotion_score}/10)"
                     yield event.plain_result(result_msg)
