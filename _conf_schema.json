@@ -32,7 +32,13 @@
     "dogdiary_auto_send_groups": {
         "description": "自动发送日记的群组ID列表",
         "type": "list",
-        "hint": "日记自动发送到的群组ID列表，多个ID用英文逗号分隔，例如 123456,789012。可以通过 '测试发送舔狗日记' 指令验证群组ID是否正确",
+        "hint": "日记自动发送到的群组ID列表，多个ID用英文逗号分隔，例如 123456,789012",
         "default": []
+    },
+    "dogdiary_forward_threshold": {
+        "description": "转发阈值（字数）",
+        "type": "int",
+        "hint": "当日记内容字数超过此值时尝试以转发样式发送（目前仅影响定时任务）",
+        "default": 200
     }
 }
